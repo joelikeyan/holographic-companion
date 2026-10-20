@@ -2,7 +2,6 @@ package com.cortana.hologram
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ColorMatrix
@@ -14,7 +13,6 @@ import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
 import android.util.AttributeSet
-import android.util.Base64
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import kotlin.math.sin
@@ -43,14 +41,7 @@ class HologramSurfaceView @JvmOverloads constructor(
     @Volatile private var running = false
     private var startTime = System.currentTimeMillis()
 
-    private val bodyBitmap: Bitmap? by lazy {
-        try {
-            val bytes = Base64.decode(HologramBodyData.WEBP_BASE64, Base64.DEFAULT)
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-        } catch (e: Exception) {
-            null
-        }
-    }
+    private val bodyBitmap: Bitmap? by lazy { HologramBodyData.loadBitmap(context) }
 
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
