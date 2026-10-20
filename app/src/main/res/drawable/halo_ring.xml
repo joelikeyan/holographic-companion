@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Minimized companion: a glowing halo ring (electric blue ring,
+     indigo fill, magenta core dot). -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="oval">
+            <stroke
+                android:width="3dp"
+                android:color="#00E5FF" />
+            <solid android:color="#334A148C" />
+        </shape>
+    </item>
+    <item
+        android:left="26dp"
+        android:top="26dp"
+        android:right="26dp"
+        android:bottom="26dp">
+        <shape android:shape="oval">
+            <solid android:color="#FF007F" />
+        </shape>
+    </item>
+</layer-list>
