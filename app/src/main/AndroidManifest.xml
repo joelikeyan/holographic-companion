@@ -54,10 +54,12 @@
             </intent-filter>
         </activity>
 
-        <!-- Transparent trampoline that opens the system speech dialog (v0.4) -->
+        <!-- Transparent trampoline that listens with its own recognizer (v0.5) -->
         <activity
             android:name=".VoiceActivity"
             android:exported="false"
+            android:noHistory="true"
+            android:excludeFromRecents="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
     </application>
 </manifest>
