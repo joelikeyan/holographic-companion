@@ -53,5 +53,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Transparent trampoline that opens the system speech dialog (v0.4) -->
+        <activity
+            android:name=".VoiceActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
     </application>
 </manifest>
