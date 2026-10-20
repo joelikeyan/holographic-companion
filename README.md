@@ -9,9 +9,10 @@ A persistent floating holographic AI companion for Android, built around a
 Cortana-inspired avatar rendered above the OS in a `TYPE_APPLICATION_OVERLAY`
 window. Palette: Electric Blue `#00E5FF`, Soft Indigo `#4A148C`, Magenta `#FF007F`.
 
-**Version 0.1.0 — buildable skeleton.** The overlay shell is real and working.
-The volumetric Filament/Vulkan renderer and the on-device AI engines are
-plugged in as documented next steps (see Status).
+**Version 0.2.0 — buildable skeleton with her bust-form hologram.** The overlay
+shell is real and working; v0.2 gives her a face and form (see Status). The
+volumetric Filament/Vulkan renderer and the on-device AI engines are
+plugged in as documented next steps.
 
 ## Status — what's real vs. what's next
 
@@ -22,7 +23,7 @@ plugged in as documented next steps (see Status).
 | Foreground service + persistent notification | ✅ Implemented |
 | Launcher flow: requests overlay permission, starts service | ✅ Implemented (`MainActivity`) |
 | Auto-restart after reboot / app update | ✅ Implemented (`BootCompletedReceiver`, best-effort on Android 12+) |
-| Hologram visuals | ⚠️ **Placeholder** — 2D Canvas animation (pulsing core, telemetry rings, scanlines, embers) in `HologramSurfaceView`. The Filament/Vulkan volumetric renderer will render into this same SurfaceView later |
+| Hologram visuals | ✅ **Bust form (v0.2)** — her avatar portrait, background keyed out and graded to the palette, floats with bob/sway/flicker/chromatic fringe over a glowing platform; image ships as Base64 WebP in `HologramBodyData.kt`. Filament/Vulkan volumetric renderer still to come |
 | Gyro/accelerometer parallax | 🔜 Roadmap |
 | Audio-reactive FFT pulses | 🔜 Roadmap |
 | Speech recognition (whisper.cpp, AAudio/Oboe) | 🔜 Roadmap — pipeline specced, not wired |
