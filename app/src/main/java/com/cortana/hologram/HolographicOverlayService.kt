@@ -176,10 +176,14 @@ class HolographicOverlayService : Service() {
                                 val scale = d / pinchStartDist
                                 // Grow/shrink around her CENTER (v0.5): shift the
                                 // window by half the size change on each step.
+                                // v0.6: cap her at the screen size and clamp her
+                                // back on-screen so she is never cut off or stuck.
                                 if (isExpanded) {
                                     val prevW = expandedWidth
                                     val prevH = expandedHeight
-                                    val newW = (pinchStartW * scale).toInt().coerceIn(360, 1500)
+                                    val (sw, sh) = screenSize()
+                                    val maxW = maxOf(360, minOf(1500, sw, (sh / 1.5f).toInt()))
+                                    val newW = (pinchStartW * scale).toInt().coerceIn(360, maxW)
                                     expandedWidth = newW
                                     expandedHeight = (newW * 1.5f).toInt()
                                     layoutParams.width = expandedWidth
@@ -195,6 +199,7 @@ class HolographicOverlayService : Service() {
                                     layoutParams.x -= (newS - prevS) / 2
                                     layoutParams.y -= (newS - prevS) / 2
                                 }
+                                clampOnScreen(layoutParams)
                                 windowManager.updateViewLayout(overlayView, layoutParams)
                             }
                             return true
@@ -246,6 +251,31 @@ class HolographicOverlayService : Service() {
         windowManager.addView(overlayView, layoutParams)
     }
 
+    private fun screenSize(): Pair<Int, Int> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val b = windowManager.currentWindowMetrics.bounds
+            Pair(b.width(), b.height())
+        } else {
+            @Suppress("DEPRECATION")
+            val dm = resources.displayMetrics
+            Pair(dm.widthPixels, dm.heightPixels)
+        }
+    }
+
+    /**
+     * Keep her fully on screen after a resize (v0.6): growing around her
+     * center near a screen edge used to push half of her off-screen, and a
+     * near-fullscreen window felt immovable. If she is bigger than the
+     * screen in a dimension, center her in it instead.
+     */
+    private fun clampOnScreen(params: WindowManager.LayoutParams) {
+        val (sw, sh) = screenSize()
+        val w = if (params.width > 0) params.width else overlayView.width
+        val h = if (params.height > 0) params.height else overlayView.height
+        params.x = if (w >= sw) (sw - w) / 2 else params.x.coerceIn(0, sw - w)
+        params.y = if (h >= sh) (sh - h) / 2 else params.y.coerceIn(0, sh - h)
+    }
+
     private fun toggleCompanionMode(params: WindowManager.LayoutParams) {
         // Anchor to her CENTER (v0.5): shrinking/growing keeps her middle
         // where it was instead of jumping to the old top-left corner.
@@ -270,6 +300,7 @@ class HolographicOverlayService : Service() {
         params.height = newH
         params.x += (oldW - newW) / 2
         params.y += (oldH - newH) / 2
+        clampOnScreen(params)
         windowManager.updateViewLayout(overlayView, params)
     }
 
@@ -299,9 +330,15 @@ class HolographicOverlayService : Service() {
     }
 
     /**
-     * The default engine voice on many phones is male. Explicitly choose a
-     * female voice when the engine offers one (Google TTS exposes names
-     * like "en-us-x-sfg#female_1"); otherwise lift the pitch as a fallback.
+     * Voice choice (v0.4, refined v0.6):
+     *  1. The user's own pick wins — the system default voice from
+     *     Settings > Accessibility > Text-to-speech, when it is female
+     *     (this is where downloaded natural voices get selected).
+     *  2. Otherwise the best DOWNLOADED (local, highest-quality) female
+     *     voice — natural voices live on-device, not in the cloud.
+     *  3. Otherwise any female voice the engine exposes (Google TTS names
+     *     some "en-us-x-sfg#female_1"; sfg/tpf are its female families).
+     *  4. Otherwise keep his default and lift the pitch as a fallback.
      * The voice list can arrive asynchronously, so retry a few times.
      */
     private fun pickFemaleVoice(attempt: Int) {
@@ -316,16 +353,36 @@ class HolographicOverlayService : Service() {
                 }
                 return
             }
-            val female = voices.firstOrNull { v ->
+
+            fun isFemale(v: android.speech.tts.Voice): Boolean =
                 v.name.contains("female", ignoreCase = true) ||
                     (v.features?.any { it.contains("female", ignoreCase = true) } == true)
-            } ?: voices.firstOrNull { v ->
-                v.name.contains("x-sfg", ignoreCase = true) ||
-                    v.name.contains("x-tpf", ignoreCase = true)
+
+            val systemDefault = try {
+                engine.defaultVoice
+            } catch (e: Exception) {
+                null
             }
-            if (female != null) {
-                engine.voice = female
+            val localFemale = voices
+                .filter { isFemale(it) && !it.isNetworkConnectionRequired }
+                .maxByOrNull { it.quality }
+            val anyFemale = voices.firstOrNull { isFemale(it) }
+                ?: voices.firstOrNull {
+                    it.name.contains("x-sfg", ignoreCase = true) ||
+                        it.name.contains("x-tpf", ignoreCase = true)
+                }
+
+            val chosen = when {
+                systemDefault != null && isFemale(systemDefault) -> systemDefault
+                localFemale != null -> localFemale
+                else -> anyFemale
+            }
+            if (chosen != null) {
+                engine.voice = chosen
                 engine.setPitch(1.05f)
+            } else if (systemDefault != null) {
+                engine.voice = systemDefault
+                engine.setPitch(1.15f)
             } else {
                 engine.setPitch(1.3f)
             }
