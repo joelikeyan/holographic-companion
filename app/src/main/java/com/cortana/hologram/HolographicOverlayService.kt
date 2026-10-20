@@ -10,13 +10,9 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.PixelFormat
 import android.os.Build
-import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.view.Gravity
@@ -25,10 +21,10 @@ import android.view.MotionEvent
 import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
-import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import java.util.Locale
+import kotlin.math.hypot
 
 class HolographicOverlayService : Service() {
 
@@ -37,11 +33,16 @@ class HolographicOverlayService : Service() {
     private lateinit var surfaceView: SurfaceView
     private var isExpanded = true
 
-    // --- Voice (v0.3): Android's built-in TTS + SpeechRecognizer, Brain.kt replies.
+    // Her sizes, in px — pinch edits these and she remembers them (v0.4).
+    private var expandedWidth = 800
+    private var expandedHeight = 1200
+    private var haloSize = 180
+
+    // --- Voice (v0.3, reworked v0.4): TTS speaks; the system speech dialog
+    // (VoiceActivity) listens; replies come from Brain.kt.
     private var tts: TextToSpeech? = null
     private var ttsReady = false
-    private var recognizer: SpeechRecognizer? = null
-    private var listening = false
+    @Volatile private var voiceBusy = false
     private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate() {
@@ -49,6 +50,30 @@ class HolographicOverlayService : Service() {
         startForegroundServiceNotification()
         setupOverlayWindow()
         initVoice()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_HEARD -> {
+                voiceBusy = false
+                val text = intent.getStringExtra(EXTRA_HEARD_TEXT)
+                if (!text.isNullOrBlank()) {
+                    val reply = Brain.respond(text)
+                    val sleep = Brain.shouldSleep(text)
+                    speak(reply, null)
+                    if (sleep) {
+                        mainHandler.postDelayed({
+                            if (isExpanded && ::overlayView.isInitialized) {
+                                @Suppress("UNCHECKED_CAST")
+                                toggleCompanionMode(overlayView.layoutParams as WindowManager.LayoutParams)
+                            }
+                        }, 2600)
+                    }
+                }
+            }
+            ACTION_HEARD_CANCEL -> voiceBusy = false
+        }
+        return START_STICKY
     }
 
     private fun startForegroundServiceNotification() {
@@ -102,33 +127,95 @@ class HolographicOverlayService : Service() {
             private var initialTouchX = 0f
             private var initialTouchY = 0f
             private var downTime = 0L
+            private var pinching = false
+            private var pinchStartDist = 0f
+            private var pinchStartW = 0
+            private var reanchorPending = false
+
+            private fun spacing(event: MotionEvent): Float {
+                if (event.pointerCount < 2) return 0f
+                return hypot(
+                    (event.getX(0) - event.getX(1)).toDouble(),
+                    (event.getY(0) - event.getY(1)).toDouble()
+                ).toFloat()
+            }
 
             override fun onTouch(v: View?, event: MotionEvent): Boolean {
-                when (event.action) {
+                when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
                         initialX = layoutParams.x
                         initialY = layoutParams.y
                         initialTouchX = event.rawX
                         initialTouchY = event.rawY
                         downTime = System.currentTimeMillis()
+                        pinching = false
+                        reanchorPending = false
+                        return true
+                    }
+                    MotionEvent.ACTION_POINTER_DOWN -> {
+                        if (event.pointerCount == 2) {
+                            pinching = true
+                            pinchStartDist = spacing(event)
+                            pinchStartW = if (layoutParams.width > 0) {
+                                layoutParams.width
+                            } else {
+                                v?.width ?: if (isExpanded) expandedWidth else haloSize
+                            }
+                        }
                         return true
                     }
                     MotionEvent.ACTION_MOVE -> {
+                        if (pinching && event.pointerCount == 2) {
+                            val d = spacing(event)
+                            if (pinchStartDist > 0f && d > 0f) {
+                                val scale = d / pinchStartDist
+                                if (isExpanded) {
+                                    val newW = (pinchStartW * scale).toInt().coerceIn(360, 1500)
+                                    expandedWidth = newW
+                                    expandedHeight = (newW * 1.5f).toInt()
+                                    layoutParams.width = expandedWidth
+                                    layoutParams.height = expandedHeight
+                                } else {
+                                    val newS = (pinchStartW * scale).toInt().coerceIn(120, 420)
+                                    haloSize = newS
+                                    layoutParams.width = newS
+                                    layoutParams.height = newS
+                                }
+                                windowManager.updateViewLayout(overlayView, layoutParams)
+                            }
+                            return true
+                        }
+                        if (reanchorPending) {
+                            // First move after a pinch ends: re-anchor so she doesn't jump.
+                            initialX = layoutParams.x
+                            initialY = layoutParams.y
+                            initialTouchX = event.rawX
+                            initialTouchY = event.rawY
+                            reanchorPending = false
+                            return true
+                        }
                         layoutParams.x = initialX + (event.rawX - initialTouchX).toInt()
                         layoutParams.y = initialY + (event.rawY - initialTouchY).toInt()
                         windowManager.updateViewLayout(overlayView, layoutParams)
                         return true
                     }
+                    MotionEvent.ACTION_POINTER_UP -> {
+                        if (pinching) reanchorPending = true
+                        return true
+                    }
                     MotionEvent.ACTION_UP -> {
+                        val wasPinching = pinching
+                        pinching = false
+                        if (wasPinching) return true
                         val diffX = Math.abs(event.rawX - initialTouchX)
                         val diffY = Math.abs(event.rawY - initialTouchY)
                         if (diffX < 10 && diffY < 10) {
                             val heldMs = System.currentTimeMillis() - downTime
                             if (heldMs > 600) {
-                                // Long-press: shrink to the halo (or stay quiet if already small).
+                                // Long-press: shrink to the halo.
                                 if (isExpanded) toggleCompanionMode(layoutParams)
                             } else if (isExpanded) {
-                                // Tap her: talk cycle — she speaks, then listens.
+                                // Tap her: talk cycle.
                                 onTalkTap()
                             } else {
                                 // Tap the halo: wake her up.
@@ -147,14 +234,14 @@ class HolographicOverlayService : Service() {
 
     private fun toggleCompanionMode(params: WindowManager.LayoutParams) {
         if (isExpanded) {
-            params.width = 180
-            params.height = 180
+            params.width = haloSize
+            params.height = haloSize
             surfaceView.visibility = View.GONE
             overlayView.findViewById<View>(R.id.compact_halo_node).visibility = View.VISIBLE
             isExpanded = false
         } else {
-            params.width = 800
-            params.height = 1200
+            params.width = expandedWidth
+            params.height = expandedHeight
             overlayView.findViewById<View>(R.id.compact_halo_node).visibility = View.GONE
             surfaceView.visibility = View.VISIBLE
             isExpanded = true
@@ -170,9 +257,10 @@ class HolographicOverlayService : Service() {
         tts = TextToSpeech(applicationContext) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 tts?.language = Locale.US
-                tts?.setPitch(1.12f)
                 tts?.setSpeechRate(1.0f)
+                tts?.setPitch(1.12f)
                 ttsReady = true
+                pickFemaleVoice(0)
             }
         }
         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
@@ -180,66 +268,52 @@ class HolographicOverlayService : Service() {
             override fun onError(utteranceId: String?) {}
             override fun onDone(utteranceId: String?) {
                 if (utteranceId == "listen_prompt") {
-                    mainHandler.post { startListening() }
+                    mainHandler.post { launchVoiceDialog() }
                 }
             }
         })
+    }
 
-        if (SpeechRecognizer.isRecognitionAvailable(this)) {
-            recognizer = SpeechRecognizer.createSpeechRecognizer(this).apply {
-                setRecognitionListener(object : RecognitionListener {
-                    override fun onReadyForSpeech(params: Bundle?) {}
-                    override fun onBeginningOfSpeech() {}
-                    override fun onRmsChanged(rmsdB: Float) {}
-                    override fun onBufferReceived(buffer: ByteArray?) {}
-                    override fun onEndOfSpeech() {}
-                    override fun onPartialResults(partialResults: Bundle?) {}
-                    override fun onEvent(eventType: Int, params: Bundle?) {}
-
-                    override fun onResults(results: Bundle?) {
-                        listening = false
-                        val text = results
-                            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                            ?.firstOrNull()
-                        if (text.isNullOrBlank()) {
-                            speak(Brain.didntCatch(), null)
-                        } else {
-                            val reply = Brain.respond(text)
-                            val sleep = Brain.shouldSleep(text)
-                            speak(reply, null)
-                            if (sleep) {
-                                mainHandler.postDelayed({
-                                    if (isExpanded && ::overlayView.isInitialized) {
-                                        @Suppress("UNCHECKED_CAST")
-                                        toggleCompanionMode(overlayView.layoutParams as WindowManager.LayoutParams)
-                                    }
-                                }, 2600)
-                            }
-                        }
-                    }
-
-                    override fun onError(error: Int) {
-                        listening = false
-                        if (error != SpeechRecognizer.ERROR_NO_MATCH &&
-                            error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT
-                        ) {
-                            speak(Brain.didntCatch(), null)
-                        }
-                    }
-                })
+    /**
+     * The default engine voice on many phones is male. Explicitly choose a
+     * female voice when the engine offers one (Google TTS exposes names
+     * like "en-us-x-sfg#female_1"); otherwise lift the pitch as a fallback.
+     * The voice list can arrive asynchronously, so retry a few times.
+     */
+    private fun pickFemaleVoice(attempt: Int) {
+        val engine = tts ?: return
+        try {
+            val voices = engine.voices
+            if (voices.isNullOrEmpty()) {
+                if (attempt < 3) {
+                    mainHandler.postDelayed({ pickFemaleVoice(attempt + 1) }, 400)
+                } else {
+                    engine.setPitch(1.3f)
+                }
+                return
             }
+            val female = voices.firstOrNull { v ->
+                v.name.contains("female", ignoreCase = true) ||
+                    (v.features?.any { it.contains("female", ignoreCase = true) } == true)
+            } ?: voices.firstOrNull { v ->
+                v.name.contains("x-sfg", ignoreCase = true) ||
+                    v.name.contains("x-tpf", ignoreCase = true)
+            }
+            if (female != null) {
+                engine.voice = female
+                engine.setPitch(1.05f)
+            } else {
+                engine.setPitch(1.3f)
+            }
+        } catch (e: Exception) {
+            engine.setPitch(1.3f)
         }
     }
 
     private fun onTalkTap() {
-        if (listening) {
-            recognizer?.stopListening()
-            listening = false
+        if (voiceBusy) {
             tts?.stop()
-            return
-        }
-        if (!ttsReady) {
-            Toast.makeText(this, "Voice is warming up — tap again in a second.", Toast.LENGTH_SHORT).show()
+            voiceBusy = false
             return
         }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
@@ -248,21 +322,22 @@ class HolographicOverlayService : Service() {
             speak("I need microphone permission to hear you. Open my app once and allow the microphone, then tap me again.", null)
             return
         }
-        speak(Brain.listenPrompt(), "listen_prompt")
+        if (ttsReady) {
+            speak(Brain.listenPrompt(), "listen_prompt")
+        } else {
+            launchVoiceDialog()
+        }
     }
 
-    private fun startListening() {
-        if (listening) return
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-        }
+    private fun launchVoiceDialog() {
         try {
-            recognizer?.startListening(intent)
-            listening = true
+            val intent = Intent(this, VoiceActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+            voiceBusy = true
         } catch (e: Exception) {
-            listening = false
+            voiceBusy = false
         }
     }
 
@@ -274,15 +349,16 @@ class HolographicOverlayService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        try {
-            recognizer?.destroy()
-        } catch (e: Exception) {
-            // already gone
-        }
         tts?.stop()
         tts?.shutdown()
         if (::overlayView.isInitialized) {
             windowManager.removeView(overlayView)
         }
+    }
+
+    companion object {
+        const val ACTION_HEARD = "com.cortana.hologram.ACTION_HEARD"
+        const val ACTION_HEARD_CANCEL = "com.cortana.hologram.ACTION_HEARD_CANCEL"
+        const val EXTRA_HEARD_TEXT = "heard_text"
     }
 }
