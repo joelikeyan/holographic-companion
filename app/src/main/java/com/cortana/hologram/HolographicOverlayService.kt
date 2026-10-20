@@ -71,6 +71,11 @@ class HolographicOverlayService : Service() {
                     }
                 }
             }
+            ACTION_HEARD_ERROR -> {
+                // She missed it — say so out loud instead of going silent (v0.5).
+                voiceBusy = false
+                speak(Brain.didntCatch(), null)
+            }
             ACTION_HEARD_CANCEL -> voiceBusy = false
         }
         return START_STICKY
@@ -169,17 +174,26 @@ class HolographicOverlayService : Service() {
                             val d = spacing(event)
                             if (pinchStartDist > 0f && d > 0f) {
                                 val scale = d / pinchStartDist
+                                // Grow/shrink around her CENTER (v0.5): shift the
+                                // window by half the size change on each step.
                                 if (isExpanded) {
+                                    val prevW = expandedWidth
+                                    val prevH = expandedHeight
                                     val newW = (pinchStartW * scale).toInt().coerceIn(360, 1500)
                                     expandedWidth = newW
                                     expandedHeight = (newW * 1.5f).toInt()
                                     layoutParams.width = expandedWidth
                                     layoutParams.height = expandedHeight
+                                    layoutParams.x -= (expandedWidth - prevW) / 2
+                                    layoutParams.y -= (expandedHeight - prevH) / 2
                                 } else {
+                                    val prevS = haloSize
                                     val newS = (pinchStartW * scale).toInt().coerceIn(120, 420)
                                     haloSize = newS
                                     layoutParams.width = newS
                                     layoutParams.height = newS
+                                    layoutParams.x -= (newS - prevS) / 2
+                                    layoutParams.y -= (newS - prevS) / 2
                                 }
                                 windowManager.updateViewLayout(overlayView, layoutParams)
                             }
@@ -233,19 +247,29 @@ class HolographicOverlayService : Service() {
     }
 
     private fun toggleCompanionMode(params: WindowManager.LayoutParams) {
+        // Anchor to her CENTER (v0.5): shrinking/growing keeps her middle
+        // where it was instead of jumping to the old top-left corner.
+        val oldW = if (params.width > 0) params.width else overlayView.width
+        val oldH = if (params.height > 0) params.height else overlayView.height
+        val newW: Int
+        val newH: Int
         if (isExpanded) {
-            params.width = haloSize
-            params.height = haloSize
+            newW = haloSize
+            newH = haloSize
             surfaceView.visibility = View.GONE
             overlayView.findViewById<View>(R.id.compact_halo_node).visibility = View.VISIBLE
             isExpanded = false
         } else {
-            params.width = expandedWidth
-            params.height = expandedHeight
+            newW = expandedWidth
+            newH = expandedHeight
             overlayView.findViewById<View>(R.id.compact_halo_node).visibility = View.GONE
             surfaceView.visibility = View.VISIBLE
             isExpanded = true
         }
+        params.width = newW
+        params.height = newH
+        params.x += (oldW - newW) / 2
+        params.y += (oldH - newH) / 2
         windowManager.updateViewLayout(overlayView, params)
     }
 
@@ -359,6 +383,7 @@ class HolographicOverlayService : Service() {
     companion object {
         const val ACTION_HEARD = "com.cortana.hologram.ACTION_HEARD"
         const val ACTION_HEARD_CANCEL = "com.cortana.hologram.ACTION_HEARD_CANCEL"
+        const val ACTION_HEARD_ERROR = "com.cortana.hologram.ACTION_HEARD_ERROR"
         const val EXTRA_HEARD_TEXT = "heard_text"
     }
 }
